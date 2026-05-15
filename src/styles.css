@@ -289,6 +289,28 @@ button:disabled {
   overflow: hidden;
 }
 
+.secondary-toggle {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: #334155;
+  cursor: pointer;
+  display: flex;
+  flex: 0 0 auto;
+  font-size: 14px;
+  font-weight: 800;
+  gap: 10px;
+  min-height: 46px;
+  padding: 0 14px;
+}
+
+.secondary-toggle input {
+  accent-color: var(--accent);
+  height: 18px;
+  width: 18px;
+}
+
 .panel-heading {
   align-items: center;
   border-bottom: 1px solid var(--border);
@@ -575,6 +597,39 @@ button:disabled {
 }
 
 .pinned-tooltip-row {
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recharts-custom-tooltip {
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid #d8dce2;
+  border-radius: 8px;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
+  color: #1f2937;
+  font-size: 14px;
+  line-height: 1.35;
+  max-width: 320px;
+  min-width: 240px;
+  padding: 10px 12px;
+}
+
+.recharts-custom-tooltip-title {
+  color: #1f2937;
+  font-weight: 800;
+  margin-bottom: 7px;
+  white-space: nowrap;
+}
+
+.recharts-custom-tooltip-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.recharts-custom-tooltip-row {
   font-weight: 700;
   overflow: hidden;
   text-overflow: ellipsis;

@@ -28,7 +28,7 @@ import { DEFAULT_COLUMNS, parseLogFile, toNumber } from './parser.js';
 import './styles.css';
 
 const COLORS = ['#2563eb', '#dc2626', '#059669', '#9333ea', '#d97706', '#0891b2', '#be123c', '#4f46e5'];
-const CHART_NOTE = '非數值、空白與 N/A 資料點會自動忽略';
+const CHART_NOTE = '空值或 N/A 資料會以斷線顯示';
 const EXPORT_POINT_LIMIT = 1800;
 
 function formatNumber(value) {
@@ -37,9 +37,7 @@ function formatNumber(value) {
 }
 
 function clampRange(start, end, rowCount) {
-  if (rowCount <= 0) {
-    return { start: 1, end: 0 };
-  }
+  if (rowCount <= 0) return { start: 1, end: 0 };
 
   const safeStart = Number.isFinite(start) ? Math.trunc(start) : 1;
   const safeEnd = Number.isFinite(end) ? Math.trunc(end) : rowCount;
@@ -52,9 +50,7 @@ function clampRange(start, end, rowCount) {
 function buildStats(rows, selectedColumns) {
   return selectedColumns.map((column) => {
     const values = rows.map((row) => toNumber(row[column])).filter((value) => value !== null);
-    if (values.length === 0) {
-      return { column, count: 0, min: null, max: null, avg: null };
-    }
+    if (values.length === 0) return { column, count: 0, min: null, max: null, avg: null };
 
     const totals = values.reduce(
       (result, value) => ({
@@ -92,6 +88,59 @@ function buildChartData(rows, selectedColumns, xKey, rangeStart) {
 
 function selectInputText(event) {
   event.currentTarget.select();
+}
+
+function orderSelectedFirst(columns, selectedColumns) {
+  return [...columns].sort((left, right) => {
+    const leftIndex = selectedColumns.indexOf(left);
+    const rightIndex = selectedColumns.indexOf(right);
+    if (leftIndex >= 0 && rightIndex >= 0) return leftIndex - rightIndex;
+    if (leftIndex >= 0) return -1;
+    if (rightIndex >= 0) return 1;
+    return 0;
+  });
+}
+
+function buildTooltipRows(columns, point) {
+  return columns
+    .map((column, index) => ({
+      color: COLORS[index % COLORS.length],
+      column,
+      value: point?.[column],
+    }))
+    .sort((left, right) => {
+      const leftNumber = typeof left.value === 'number' && Number.isFinite(left.value);
+      const rightNumber = typeof right.value === 'number' && Number.isFinite(right.value);
+      if (leftNumber && rightNumber) return right.value - left.value;
+      if (leftNumber) return -1;
+      if (rightNumber) return 1;
+      return 0;
+    });
+}
+
+function ChartTooltip({ label, payload }) {
+  if (!payload?.length) return null;
+  const sortedPayload = [...payload].sort((left, right) => {
+    const leftNumber = typeof left.value === 'number' && Number.isFinite(left.value);
+    const rightNumber = typeof right.value === 'number' && Number.isFinite(right.value);
+    if (leftNumber && rightNumber) return right.value - left.value;
+    if (leftNumber) return -1;
+    if (rightNumber) return 1;
+    return 0;
+  });
+
+  return (
+    <div className="recharts-custom-tooltip">
+      <div className="recharts-custom-tooltip-title">列 / 時間：{label}</div>
+      <div className="recharts-custom-tooltip-list">
+        {sortedPayload.map((item) => (
+          <div className="recharts-custom-tooltip-row" key={item.dataKey} style={{ color: item.color }}>
+            {item.name || item.dataKey} : {formatNumber(item.value)}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function sanitizeFileName(value) {
@@ -242,13 +291,9 @@ function downloadChartImage({ chartData, columns, fileName, pinnedIndex, title }
   const pinnedPoint = Number.isInteger(pinnedIndex) ? chartData[pinnedIndex] : null;
   if (pinnedPoint) {
     const pinnedX = plot.left + (plotWidth / Math.max(1, chartData.length - 1)) * pinnedIndex;
-    const pinnedValues = columns
-      .map((column, index) => ({
-        column,
-        color: COLORS[index % COLORS.length],
-        value: pinnedPoint[column],
-      }))
-      .filter((item) => typeof item.value === 'number' && Number.isFinite(item.value));
+    const pinnedValues = buildTooltipRows(columns, pinnedPoint).filter(
+      (item) => typeof item.value === 'number' && Number.isFinite(item.value),
+    );
     const pinnedYs = pinnedValues.map(
       (item) => plot.top + plotHeight - ((item.value - yMin) / (yMax - yMin)) * plotHeight,
     );
@@ -299,7 +344,7 @@ function downloadChartImage({ chartData, columns, fileName, pinnedIndex, title }
 
     context.fillStyle = '#1f2937';
     context.font = '700 15px "Noto Sans TC", "Microsoft JhengHei", Arial, sans-serif';
-    context.fillText(`時間 / 序號：${pinnedPoint.xLabel}`, tooltipX + 12, tooltipY + 24);
+    context.fillText(`列 / 時間：${pinnedPoint.xLabel}`, tooltipX + 12, tooltipY + 24);
     context.font = '700 14px "Noto Sans TC", "Microsoft JhengHei", Arial, sans-serif';
     pinnedValues.forEach((item, index) => {
       context.fillStyle = item.color;
@@ -340,6 +385,8 @@ function ColumnSelector({
   subtitle,
   title,
 }) {
+  const displayedColumns = orderSelectedFirst(filteredColumns, selectedColumns);
+
   return (
     <section className="column-panel">
       <div className="panel-heading">
@@ -361,8 +408,8 @@ function ColumnSelector({
         />
       </label>
       <div className="column-list">
-        {filteredColumns.length > 0 ? (
-          filteredColumns.map((column) => {
+        {displayedColumns.length > 0 ? (
+          displayedColumns.map((column) => {
             const checked = selectedColumns.includes(column);
             const isDefault = defaultColumns.includes(column);
             return (
@@ -391,6 +438,7 @@ function ChartPanel({ chartData, onDownload, onTitleChange, selectedColumns, tit
     pinnedTooltip && pinnedTooltip.index >= 0 && pinnedTooltip.index < chartData.length
       ? chartData[pinnedTooltip.index]
       : null;
+  const pinnedRows = pinnedPoint ? buildTooltipRows(selectedColumns, pinnedPoint) : [];
 
   function handleChartClick(event) {
     if (!event || typeof event.activeTooltipIndex !== 'number' || !event.activeCoordinate) return;
@@ -411,7 +459,7 @@ function ChartPanel({ chartData, onDownload, onTitleChange, selectedColumns, tit
       <div className="panel-heading">
         <div className="chart-title-group">
           <input
-            aria-label="圖表名稱"
+            aria-label="圖表標題"
             className="chart-title-input"
             type="text"
             value={title}
@@ -421,12 +469,12 @@ function ChartPanel({ chartData, onDownload, onTitleChange, selectedColumns, tit
         </div>
         <div className="chart-actions">
           <button
-            aria-label="存成圖片"
+            aria-label="下載圖表"
             className="icon-button"
             type="button"
             onClick={() => onDownload(pinnedTooltip?.index)}
             disabled={!canDownload}
-            title="存成圖片"
+            title="下載圖表"
           >
             <Download size={18} />
           </button>
@@ -444,20 +492,7 @@ function ChartPanel({ chartData, onDownload, onTitleChange, selectedColumns, tit
               <CartesianGrid strokeDasharray="3 3" stroke="#d9e2ef" />
               <XAxis dataKey="xLabel" minTickGap={42} tick={{ fontSize: 12 }} />
               <YAxis tick={{ fontSize: 12 }} width={58} />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: 'rgba(255, 255, 255, 0.98)',
-                  border: '1px solid #d8dce2',
-                  borderRadius: 8,
-                  boxShadow: '0 10px 24px rgba(15, 23, 42, 0.14)',
-                  color: '#1f2937',
-                  fontSize: 14,
-                  lineHeight: 1.35,
-                  padding: '10px 12px',
-                }}
-                formatter={(value) => (value == null ? '-' : formatNumber(value))}
-                labelFormatter={(label) => `時間 / 序號：${label}`}
-              />
+              <Tooltip content={<ChartTooltip />} />
               <Legend wrapperStyle={{ paddingTop: 10 }} />
               {selectedColumns.map((column, index) => (
                 <Line
@@ -494,7 +529,7 @@ function ChartPanel({ chartData, onDownload, onTitleChange, selectedColumns, tit
             </RechartsLineChart>
           </ResponsiveContainer>
         ) : (
-          <div className="empty-state">選擇欄位後會顯示折線圖。</div>
+          <div className="empty-state">請選擇欄位以顯示圖表</div>
         )}
         {pinnedPoint && (
           <div
@@ -504,11 +539,11 @@ function ChartPanel({ chartData, onDownload, onTitleChange, selectedColumns, tit
               top: pinnedTooltip.coordinate.y,
             }}
           >
-            <div className="pinned-tooltip-title">時間 / 序號：{pinnedPoint.xLabel}</div>
+            <div className="pinned-tooltip-title">列 / 時間：{pinnedPoint.xLabel}</div>
             <div className="pinned-tooltip-list">
-              {selectedColumns.map((column, index) => (
-                <div className="pinned-tooltip-row" key={column} style={{ color: COLORS[index % COLORS.length] }}>
-                  {column} : {formatNumber(pinnedPoint[column])}
+              {pinnedRows.map((item) => (
+                <div className="pinned-tooltip-row" key={item.column} style={{ color: item.color }}>
+                  {item.column} : {formatNumber(item.value)}
                 </div>
               ))}
             </div>
@@ -536,8 +571,9 @@ function App() {
   const [rangeEndInput, setRangeEndInput] = useState('');
   const [columnSearch, setColumnSearch] = useState('');
   const [secondaryColumnSearch, setSecondaryColumnSearch] = useState('');
-  const [chartTitle, setChartTitle] = useState('折線圖');
-  const [secondaryChartTitle, setSecondaryChartTitle] = useState('第二張折線圖');
+  const [showSecondaryChart, setShowSecondaryChart] = useState(true);
+  const [chartTitle, setChartTitle] = useState('主要功耗圖');
+  const [secondaryChartTitle, setSecondaryChartTitle] = useState('次要欄位圖');
 
   const rowCount = rows.length;
   const range = useMemo(
@@ -589,8 +625,8 @@ function App() {
       setRangeEndInput(String(parsed.rows.length));
       setColumnSearch('');
       setSecondaryColumnSearch('');
-      setChartTitle('折線圖');
-      setSecondaryChartTitle('第二張折線圖');
+      setChartTitle('主要功耗圖');
+      setSecondaryChartTitle('次要欄位圖');
     } catch (err) {
       setFileName('');
       setRows([]);
@@ -603,12 +639,10 @@ function App() {
       setRangeEndInput('');
       setColumnSearch('');
       setSecondaryColumnSearch('');
-      setError(err instanceof Error ? err.message : '無法解析檔案。');
+      setError(err instanceof Error ? err.message : '無法讀取檔案');
     } finally {
       setIsLoading(false);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   }
 
@@ -648,8 +682,8 @@ function App() {
     setRangeEndInput('');
     setColumnSearch('');
     setSecondaryColumnSearch('');
-    setChartTitle('折線圖');
-    setSecondaryChartTitle('第二張折線圖');
+    setChartTitle('主要功耗圖');
+    setSecondaryChartTitle('次要欄位圖');
   }
 
   return (
@@ -657,7 +691,7 @@ function App() {
       <section className="top-bar">
         <div>
           <h1>Log 檢查工具</h1>
-          <p>載入 CSV 或 Excel 檔，選擇欄位查看最大值、最小值、平均值與折線圖。</p>
+          <p>匯入 CSV 或 Excel log，快速檢查功耗、溫度與其他數值欄位的趨勢。</p>
         </div>
         {hasData && (
           <button className="ghost-button" type="button" onClick={clearFile}>
@@ -691,8 +725,8 @@ function App() {
           <Upload size={26} />
         </div>
         <div>
-          <strong>{isLoading ? '解析中...' : '拖放 log 檔或選擇檔案'}</strong>
-          <span>支援 CSV、XLSX、XLS。檔案只會在本機瀏覽器解析。</span>
+          <strong>{isLoading ? '讀取中...' : '拖曳 log 檔案到這裡'}</strong>
+          <span>支援 CSV、XLSX、XLS，會自動尋找表頭並分析可用的數值欄位。</span>
         </div>
         <button type="button" onClick={() => fileInputRef.current?.click()}>
           <FileSpreadsheet size={18} />
@@ -726,7 +760,7 @@ function App() {
               <strong>{fileName}</strong>
             </div>
             <div>
-              <span>資料筆數</span>
+              <span>資料列數</span>
               <strong>
                 {rangedRows.length.toLocaleString()} / {rowCount.toLocaleString()}
               </strong>
@@ -737,18 +771,18 @@ function App() {
             </div>
             <div>
               <span>X 軸</span>
-              <strong>{xLabel || '資料列序號'}</strong>
+              <strong>{xLabel || '資料列號'}</strong>
             </div>
           </section>
 
           <section className="range-panel">
             <div>
               <h2>資料範圍</h2>
-              <p>統計值與折線圖只會使用指定筆數範圍。現在範圍：{rangeText}</p>
+              <p>調整要顯示與統計的資料列，現在範圍：{rangeText}</p>
             </div>
             <div className="range-controls">
               <label>
-                <span>起始筆</span>
+                <span>起始列</span>
                 <input
                   min="1"
                   max={rowCount}
@@ -761,7 +795,7 @@ function App() {
                 />
               </label>
               <label>
-                <span>結束筆</span>
+                <span>結束列</span>
                 <input
                   min="1"
                   max={rowCount}
@@ -775,37 +809,47 @@ function App() {
               </label>
               <button className="secondary-button" type="button" onClick={resetRange}>
                 <RotateCcw size={16} />
-                全部資料
+                重設範圍
               </button>
             </div>
           </section>
 
           <section className="workspace-grid">
             <aside className="column-sidebar">
+              <label className="secondary-toggle">
+                <input
+                  type="checkbox"
+                  checked={showSecondaryChart}
+                  onChange={(event) => setShowSecondaryChart(event.target.checked)}
+                />
+                <span>顯示次要欄位與次要圖</span>
+              </label>
               <ColumnSelector
                 columns={numericColumns}
                 defaultColumns={DEFAULT_COLUMNS}
-                emptyText="找不到符合搜尋的欄位。"
+                emptyText="找不到符合搜尋的數值欄位"
                 filteredColumns={filteredColumns}
                 onSearchChange={setColumnSearch}
                 onToggleColumn={toggleColumn}
                 search={columnSearch}
                 selectedColumns={selectedColumns}
-                subtitle="選擇要統計與繪圖的數值欄位"
+                subtitle="選擇要在主要圖表與統計卡顯示的欄位"
                 title="主要欄位"
               />
-              <ColumnSelector
-                columns={numericColumns}
-                defaultColumns={DEFAULT_COLUMNS}
-                emptyText="找不到符合搜尋的欄位。"
-                filteredColumns={filteredSecondaryColumns}
-                onSearchChange={setSecondaryColumnSearch}
-                onToggleColumn={toggleSecondaryColumn}
-                search={secondaryColumnSearch}
-                selectedColumns={secondaryColumns}
-                subtitle="選擇要產生第二張折線圖的欄位"
-                title="第二張折線圖"
-              />
+              {showSecondaryChart && (
+                <ColumnSelector
+                  columns={numericColumns}
+                  defaultColumns={DEFAULT_COLUMNS}
+                  emptyText="找不到符合搜尋的數值欄位"
+                  filteredColumns={filteredSecondaryColumns}
+                  onSearchChange={setSecondaryColumnSearch}
+                  onToggleColumn={toggleSecondaryColumn}
+                  search={secondaryColumnSearch}
+                  selectedColumns={secondaryColumns}
+                  subtitle="選擇要另外繪製在第二張圖的欄位"
+                  title="次要欄位"
+                />
+              )}
             </aside>
 
             <section className="main-panel">
@@ -838,7 +882,7 @@ function App() {
                     </article>
                   ))
                 ) : (
-                  <div className="empty-state">請從左側選擇至少一個欄位。</div>
+                  <div className="empty-state">請先選擇至少一個數值欄位</div>
                 )}
               </div>
 
@@ -857,21 +901,23 @@ function App() {
                 selectedColumns={selectedColumns}
                 title={chartTitle}
               />
-              <ChartPanel
-                chartData={secondaryChartData}
-                onDownload={(pinnedIndex) =>
-                  downloadChartImage({
-                    chartData: secondaryChartData,
-                    columns: secondaryColumns,
-                    fileName: secondaryChartTitle,
-                    pinnedIndex,
-                    title: secondaryChartTitle,
-                  })
-                }
-                onTitleChange={setSecondaryChartTitle}
-                selectedColumns={secondaryColumns}
-                title={secondaryChartTitle}
-              />
+              {showSecondaryChart && (
+                <ChartPanel
+                  chartData={secondaryChartData}
+                  onDownload={(pinnedIndex) =>
+                    downloadChartImage({
+                      chartData: secondaryChartData,
+                      columns: secondaryColumns,
+                      fileName: secondaryChartTitle,
+                      pinnedIndex,
+                      title: secondaryChartTitle,
+                    })
+                  }
+                  onTitleChange={setSecondaryChartTitle}
+                  selectedColumns={secondaryColumns}
+                  title={secondaryChartTitle}
+                />
+              )}
             </section>
           </section>
         </>

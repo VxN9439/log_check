@@ -79,7 +79,7 @@ function tableToRows(table) {
   const headerIndex = findHeaderIndex(cleaned);
 
   if (headerIndex < 0) {
-    throw new Error('找不到資料表表頭。請確認檔案包含 Iteration、Date、Timestamp 或預設欄位。');
+    throw new Error('找不到可辨識的表頭，請確認檔案包含 Iteration、Date、Timestamp 或預設欄位。');
   }
 
   const headers = dedupeHeaders(cleaned[headerIndex]);
@@ -95,7 +95,7 @@ function tableToRows(table) {
     });
 
   if (rows.length === 0) {
-    throw new Error('找到表頭，但沒有可分析的資料列。');
+    throw new Error('已找到表頭，但表頭後沒有可分析的資料列。');
   }
 
   return { headers, rows };
@@ -119,7 +119,7 @@ function buildXLabels(rows) {
   return {
     rows: rows.map((row, index) => ({ ...row, [xKey]: String(index + 1) })),
     xKey,
-    xLabel: '資料列序號',
+    xLabel: '資料列號',
   };
 }
 
@@ -133,7 +133,7 @@ function finalizeParsedTable(table) {
   const numericColumns = getNumericColumns(headers, rowsWithX);
 
   if (numericColumns.length === 0) {
-    throw new Error('此檔案沒有可分析的數值欄位。');
+    throw new Error('檔案中找不到可分析的數值欄位。');
   }
 
   const missingDefaults = DEFAULT_COLUMNS.filter((column) => !headers.includes(column));
@@ -142,8 +142,8 @@ function finalizeParsedTable(table) {
   );
   const selectedColumns = DEFAULT_COLUMNS.filter((column) => numericColumns.includes(column));
   const warnings = [
-    ...missingDefaults.map((column) => `此檔案未找到：${column}`),
-    ...nonNumericDefaults.map((column) => `此欄位不是可分析的數值欄位：${column}`),
+    ...missingDefaults.map((column) => `預設欄位不存在：${column}`),
+    ...nonNumericDefaults.map((column) => `預設欄位不是數值欄位：${column}`),
   ];
 
   return {
@@ -180,7 +180,7 @@ async function parseWorkbook(file) {
   const firstSheetName = workbook.SheetNames[0];
 
   if (!firstSheetName) {
-    throw new Error('Excel 檔案沒有工作表。');
+    throw new Error('Excel 檔案沒有可讀取的工作表。');
   }
 
   const sheet = workbook.Sheets[firstSheetName];
@@ -197,13 +197,8 @@ async function parseWorkbook(file) {
 export async function parseLogFile(file) {
   const name = file.name.toLowerCase();
 
-  if (name.endsWith('.csv')) {
-    return parseCsv(file);
-  }
+  if (name.endsWith('.csv')) return parseCsv(file);
+  if (name.endsWith('.xlsx') || name.endsWith('.xls')) return parseWorkbook(file);
 
-  if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
-    return parseWorkbook(file);
-  }
-
-  throw new Error('不支援的檔案格式。請選擇 CSV、XLSX 或 XLS 檔。');
+  throw new Error('不支援此檔案格式，請選擇 CSV、XLSX 或 XLS 檔。');
 }

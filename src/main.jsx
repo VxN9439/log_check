@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   AlertCircle,
@@ -30,10 +30,66 @@ import './styles.css';
 const COLORS = ['#2563eb', '#dc2626', '#059669', '#9333ea', '#d97706', '#0891b2', '#be123c', '#4f46e5'];
 const CHART_NOTE = '空值或 N/A 資料會以斷線顯示';
 const EXPORT_POINT_LIMIT = 1800;
+const PINNED_TOOLTIP_GAP = 10;
+const STATUS_EMPTY_VALUES = new Set(['', 'n/a', 'na', 'nan', 'null', 'undefined', '-']);
+const TOOLTIP_LABELS = {
+  '1:TGP (W)': 'GPU TGP (W)',
+  'CPU TDP (W)': 'CPU TDP (W)',
+  '1:TPP Measured (W)': 'TPP (W)',
+  '1:Temperature GPU (C)': 'GPU Temp (C)',
+  'CPU Temperature (C)': 'CPU Temp (C)',
+  '1:P-State': 'P-State',
+  '1:Capping Reason': 'Cap Reason',
+  'CPU PROCHOT Asserted': 'PROCHOT',
+  'CPU Thermal Throttling': 'Thermal Throttle',
+  'Power-Package Power(Watts)': 'Package Power (Watts)',
+  'Power-IA Power(Watts)': 'IA Power (Watts)',
+  'Power-GT Power(Watts)': 'GT Power (Watts)',
+  'Power-MSR Psys Power(Watts)': 'Psys Power (Watts)',
+  'Miscellaneous-MSR Package Temperature(Degree C)': 'Package Temp (Degree C)',
+  'Miscellaneous-MMIO Package Temperature(Degree C)': 'MMIO Temp (Degree C)',
+  'CPU-Info-P-Core Average Frequency(MHz)': 'P-Core Avg Freq (MHz)',
+  'CPU-Info-E-Core Average Frequency(MHz)': 'E-Core Avg Freq (MHz)',
+  'Turbo Parameters-IA Clip Reason': 'IA Clip',
+  'Turbo Parameters-Gt Clip Reason': 'GT Clip',
+  'Turbo Parameters-IA Thermal Status': 'IA Thermal',
+  'Turbo Parameters-GT Thermal Status': 'GT Thermal',
+  'PCH-Throttling Level': 'PCH Throttle',
+};
 
 function formatNumber(value) {
   if (value == null || Number.isNaN(value)) return '-';
   return Number(value).toFixed(2);
+}
+
+function formatStatusValue(value) {
+  const text = String(value ?? '').trim();
+  return STATUS_EMPTY_VALUES.has(text.toLowerCase()) ? '-' : text;
+}
+
+function formatTooltipLabel(column) {
+  const text = String(column ?? '');
+  if (TOOLTIP_LABELS[text]) return TOOLTIP_LABELS[text];
+
+  return text
+    .replace(/^(Turbo Parameters|Miscellaneous|CPU-Info|Power|Gfx Component|CPU Workload)-/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isImportantStatus(column, value) {
+  const text = formatStatusValue(value);
+  if (text === '-') return false;
+  if (column === '1:Capping Reason') return text.toLowerCase().includes('thml');
+  if (column === 'CPU PROCHOT Asserted' || column === 'CPU Thermal Throttling') {
+    return text.toLowerCase() === 'yes';
+  }
+  if (column.endsWith(' Clip Reason')) return text.toLowerCase() !== 'not clipped';
+  if (column.endsWith(' Thermal Status')) return text.toLowerCase() !== 'none';
+  if (column === 'Miscellaneous-IsPkgTempGreaterThanTjMax') {
+    return ['1', 'yes', 'true'].includes(text.toLowerCase());
+  }
+  return false;
 }
 
 function clampRange(start, end, rowCount) {
@@ -71,7 +127,7 @@ function buildStats(rows, selectedColumns) {
   });
 }
 
-function buildChartData(rows, selectedColumns, xKey, rangeStart) {
+function buildChartData(rows, selectedColumns, statusColumns, xKey, rangeStart) {
   return rows.map((row, index) => {
     const point = {
       xLabel: row[xKey] || String(rangeStart + index),
@@ -80,6 +136,10 @@ function buildChartData(rows, selectedColumns, xKey, rangeStart) {
 
     selectedColumns.forEach((column) => {
       point[column] = toNumber(row[column]);
+    });
+
+    statusColumns.forEach((column) => {
+      point[column] = formatStatusValue(row[column]);
     });
 
     return point;
@@ -106,6 +166,7 @@ function buildTooltipRows(columns, point) {
     .map((column, index) => ({
       color: COLORS[index % COLORS.length],
       column,
+      label: formatTooltipLabel(column),
       value: point?.[column],
     }))
     .sort((left, right) => {
@@ -118,8 +179,18 @@ function buildTooltipRows(columns, point) {
     });
 }
 
-function ChartTooltip({ label, payload }) {
+function buildStatusRows(statusColumns, point) {
+  return statusColumns.map((column) => ({
+    column,
+    isImportant: isImportantStatus(column, point?.[column]),
+    label: formatTooltipLabel(column),
+    value: formatStatusValue(point?.[column]),
+  }));
+}
+
+function ChartTooltip({ label, payload, statusColumns = [] }) {
   if (!payload?.length) return null;
+  const point = payload[0]?.payload;
   const sortedPayload = [...payload].sort((left, right) => {
     const leftNumber = typeof left.value === 'number' && Number.isFinite(left.value);
     const rightNumber = typeof right.value === 'number' && Number.isFinite(right.value);
@@ -135,10 +206,20 @@ function ChartTooltip({ label, payload }) {
       <div className="recharts-custom-tooltip-list">
         {sortedPayload.map((item) => (
           <div className="recharts-custom-tooltip-row" key={item.dataKey} style={{ color: item.color }}>
-            {item.name || item.dataKey} : {formatNumber(item.value)}
+            {formatTooltipLabel(item.name || item.dataKey)} : {formatNumber(item.value)}
           </div>
         ))}
       </div>
+      {statusColumns.length > 0 && (
+        <div className="tooltip-status-list">
+          {buildStatusRows(statusColumns, point).map((item) => (
+            <div className={`tooltip-status-row ${item.isImportant ? 'important' : ''}`} key={item.column}>
+              <span>{item.label}</span>
+              <strong>{item.value}</strong>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -348,7 +429,7 @@ function downloadChartImage({ chartData, columns, fileName, pinnedIndex, title }
     context.font = '700 14px "Noto Sans TC", "Microsoft JhengHei", Arial, sans-serif';
     pinnedValues.forEach((item, index) => {
       context.fillStyle = item.color;
-      context.fillText(`${item.column} : ${formatNumber(item.value)}`, tooltipX + 12, tooltipY + 50 + index * 24);
+      context.fillText(`${item.label} : ${formatNumber(item.value)}`, tooltipX + 12, tooltipY + 50 + index * 24);
     });
   }
 
@@ -385,7 +466,31 @@ function ColumnSelector({
   subtitle,
   title,
 }) {
+  const listRef = useRef(null);
+  const pendingScrollRef = useRef(null);
   const displayedColumns = orderSelectedFirst(filteredColumns, selectedColumns);
+
+  useLayoutEffect(() => {
+    const pendingScroll = pendingScrollRef.current;
+    if (!pendingScroll) return;
+
+    if (listRef.current) {
+      listRef.current.scrollTop = pendingScroll.listTop;
+      listRef.current.scrollLeft = pendingScroll.listLeft;
+    }
+    window.scrollTo(pendingScroll.windowX, pendingScroll.windowY);
+    pendingScrollRef.current = null;
+  }, [displayedColumns]);
+
+  function handleToggleColumn(column) {
+    pendingScrollRef.current = {
+      listLeft: listRef.current?.scrollLeft || 0,
+      listTop: listRef.current?.scrollTop || 0,
+      windowX: window.scrollX,
+      windowY: window.scrollY,
+    };
+    onToggleColumn(column);
+  }
 
   return (
     <section className="column-panel">
@@ -407,14 +512,14 @@ function ColumnSelector({
           placeholder="搜尋欄位"
         />
       </label>
-      <div className="column-list">
+      <div className="column-list" ref={listRef}>
         {displayedColumns.length > 0 ? (
           displayedColumns.map((column) => {
             const checked = selectedColumns.includes(column);
             const isDefault = defaultColumns.includes(column);
             return (
               <label className={`column-option ${checked ? 'checked' : ''}`} key={column}>
-                <input type="checkbox" checked={checked} onChange={() => onToggleColumn(column)} />
+                <input type="checkbox" checked={checked} onChange={() => handleToggleColumn(column)} />
                 <span className="fake-checkbox">{checked && <Check size={14} />}</span>
                 <span className="column-name">{column}</span>
                 {isDefault && <span className="default-badge">預設</span>}
@@ -429,7 +534,7 @@ function ColumnSelector({
   );
 }
 
-function ChartPanel({ chartData, onDownload, onTitleChange, selectedColumns, title }) {
+function ChartPanel({ chartData, onDownload, onTitleChange, selectedColumns, statusColumns = [], title }) {
   const chartAreaRef = useRef(null);
   const canDownload = selectedColumns.length > 0 && chartData.length > 0;
   const [pinnedTooltip, setPinnedTooltip] = useState(null);
@@ -439,17 +544,41 @@ function ChartPanel({ chartData, onDownload, onTitleChange, selectedColumns, tit
       ? chartData[pinnedTooltip.index]
       : null;
   const pinnedRows = pinnedPoint ? buildTooltipRows(selectedColumns, pinnedPoint) : [];
+  const pinnedStatusRows = pinnedPoint ? buildStatusRows(statusColumns, pinnedPoint) : [];
+  const pinnedChartWidth = chartAreaRef.current?.clientWidth || 0;
+  const pinnedTooltipStyle =
+    pinnedTooltip?.placement === 'left'
+      ? {
+          right: Math.max(PINNED_TOOLTIP_GAP, pinnedChartWidth - pinnedTooltip.anchor.x + PINNED_TOOLTIP_GAP),
+          top: pinnedTooltip.anchor.y,
+        }
+      : pinnedTooltip
+        ? {
+            left: pinnedTooltip.anchor.x + PINNED_TOOLTIP_GAP,
+            top: pinnedTooltip.anchor.y,
+          }
+        : undefined;
 
   function handleChartClick(event) {
     if (!event || typeof event.activeTooltipIndex !== 'number' || !event.activeCoordinate) return;
 
-    const chartWidth = chartAreaRef.current?.clientWidth || 0;
+    const chartArea = chartAreaRef.current;
+    const chartAreaRect = chartArea?.getBoundingClientRect();
+    const wrapperRect = chartArea?.querySelector('.recharts-wrapper')?.getBoundingClientRect();
+    const wrapperOffsetX = chartAreaRect && wrapperRect ? wrapperRect.left - chartAreaRect.left : 0;
+    const wrapperOffsetY = chartAreaRect && wrapperRect ? wrapperRect.top - chartAreaRect.top : 0;
+    const wrapperWidth = wrapperRect?.width || chartArea?.clientWidth || 0;
+    const anchor = {
+      x: wrapperOffsetX + event.activeCoordinate.x,
+      y: wrapperOffsetY + event.activeCoordinate.y,
+    };
+
     setPinnedTooltip((current) => {
       if (current?.index === event.activeTooltipIndex) return null;
       return {
-        coordinate: event.activeCoordinate,
+        anchor,
         index: event.activeTooltipIndex,
-        placement: event.activeCoordinate.x > chartWidth / 2 ? 'left' : 'right',
+        placement: event.activeCoordinate.x > wrapperWidth / 2 ? 'left' : 'right',
       };
     });
   }
@@ -492,7 +621,7 @@ function ChartPanel({ chartData, onDownload, onTitleChange, selectedColumns, tit
               <CartesianGrid strokeDasharray="3 3" stroke="#d9e2ef" />
               <XAxis dataKey="xLabel" minTickGap={42} tick={{ fontSize: 12 }} />
               <YAxis tick={{ fontSize: 12 }} width={58} />
-              <Tooltip content={<ChartTooltip />} />
+              <Tooltip content={<ChartTooltip statusColumns={statusColumns} />} />
               <Legend wrapperStyle={{ paddingTop: 10 }} />
               {selectedColumns.map((column, index) => (
                 <Line
@@ -534,21 +663,73 @@ function ChartPanel({ chartData, onDownload, onTitleChange, selectedColumns, tit
         {pinnedPoint && (
           <div
             className={`pinned-tooltip ${pinnedTooltip.placement === 'left' ? 'left' : 'right'}`}
-            style={{
-              left: pinnedTooltip.coordinate.x,
-              top: pinnedTooltip.coordinate.y,
-            }}
+            style={pinnedTooltipStyle}
           >
             <div className="pinned-tooltip-title">列 / 時間：{pinnedPoint.xLabel}</div>
             <div className="pinned-tooltip-list">
               {pinnedRows.map((item) => (
                 <div className="pinned-tooltip-row" key={item.column} style={{ color: item.color }}>
-                  {item.column} : {formatNumber(item.value)}
+                  {item.label} : {formatNumber(item.value)}
                 </div>
               ))}
             </div>
+            {pinnedStatusRows.length > 0 && (
+              <div className="tooltip-status-list">
+                {pinnedStatusRows.map((item) => (
+                  <div className={`tooltip-status-row ${item.isImportant ? 'important' : ''}`} key={item.column}>
+                    <span>{item.label}</span>
+                    <strong>{item.value}</strong>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
+      </div>
+    </section>
+  );
+}
+
+function StatusTable({ rows, statusColumns, xKey, rangeStart }) {
+  if (statusColumns.length === 0) return null;
+
+  return (
+    <section className="status-panel">
+      <div className="panel-heading">
+        <div>
+          <h2>狀態欄位明細</h2>
+          <p>顯示目前範圍內每列的 P-State、Capping 與 CPU throttle 狀態</p>
+        </div>
+        <span>{rows.length.toLocaleString()}</span>
+      </div>
+      <div className="status-table-wrap">
+        <table className="status-table">
+          <thead>
+            <tr>
+              <th>Row</th>
+              <th>X</th>
+              {statusColumns.map((column) => (
+                <th key={column}>{column}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, index) => (
+              <tr key={`${rangeStart + index}-${row[xKey] || index}`}>
+                <td>{(rangeStart + index).toLocaleString()}</td>
+                <td>{formatStatusValue(row[xKey] || rangeStart + index)}</td>
+                {statusColumns.map((column) => {
+                  const value = formatStatusValue(row[column]);
+                  return (
+                    <td className={isImportantStatus(column, value) ? 'important-status-cell' : ''} key={column}>
+                      {value}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </section>
   );
@@ -559,6 +740,8 @@ function App() {
   const [fileName, setFileName] = useState('');
   const [rows, setRows] = useState([]);
   const [numericColumns, setNumericColumns] = useState([]);
+  const [statusColumns, setStatusColumns] = useState([]);
+  const [defaultColumns, setDefaultColumns] = useState(DEFAULT_COLUMNS);
   const [selectedColumns, setSelectedColumns] = useState([]);
   const [secondaryColumns, setSecondaryColumns] = useState([]);
   const [warnings, setWarnings] = useState([]);
@@ -572,6 +755,7 @@ function App() {
   const [columnSearch, setColumnSearch] = useState('');
   const [secondaryColumnSearch, setSecondaryColumnSearch] = useState('');
   const [showSecondaryChart, setShowSecondaryChart] = useState(true);
+  const [showTooltipStatus, setShowTooltipStatus] = useState(true);
   const [chartTitle, setChartTitle] = useState('主要功耗圖');
   const [secondaryChartTitle, setSecondaryChartTitle] = useState('次要欄位圖');
 
@@ -583,12 +767,12 @@ function App() {
   const rangedRows = useMemo(() => rows.slice(range.start - 1, range.end), [range.end, range.start, rows]);
   const stats = useMemo(() => buildStats(rangedRows, selectedColumns), [rangedRows, selectedColumns]);
   const chartData = useMemo(
-    () => buildChartData(rangedRows, selectedColumns, xKey, range.start),
-    [rangedRows, selectedColumns, xKey, range.start],
+    () => buildChartData(rangedRows, selectedColumns, statusColumns, xKey, range.start),
+    [rangedRows, selectedColumns, statusColumns, xKey, range.start],
   );
   const secondaryChartData = useMemo(
-    () => buildChartData(rangedRows, secondaryColumns, xKey, range.start),
-    [rangedRows, secondaryColumns, xKey, range.start],
+    () => buildChartData(rangedRows, secondaryColumns, statusColumns, xKey, range.start),
+    [rangedRows, secondaryColumns, statusColumns, xKey, range.start],
   );
   const filteredColumns = useMemo(() => {
     const keyword = columnSearch.trim().toLowerCase();
@@ -616,6 +800,8 @@ function App() {
       setFileName(file.name);
       setRows(parsed.rows);
       setNumericColumns(parsed.numericColumns);
+      setStatusColumns(parsed.statusColumns || []);
+      setDefaultColumns(parsed.defaultColumns || DEFAULT_COLUMNS);
       setSelectedColumns(parsed.selectedColumns);
       setSecondaryColumns([]);
       setWarnings(parsed.warnings);
@@ -625,12 +811,15 @@ function App() {
       setRangeEndInput(String(parsed.rows.length));
       setColumnSearch('');
       setSecondaryColumnSearch('');
+      setShowTooltipStatus(true);
       setChartTitle('主要功耗圖');
       setSecondaryChartTitle('次要欄位圖');
     } catch (err) {
       setFileName('');
       setRows([]);
       setNumericColumns([]);
+      setStatusColumns([]);
+      setDefaultColumns(DEFAULT_COLUMNS);
       setSelectedColumns([]);
       setSecondaryColumns([]);
       setXKey('');
@@ -639,6 +828,7 @@ function App() {
       setRangeEndInput('');
       setColumnSearch('');
       setSecondaryColumnSearch('');
+      setShowTooltipStatus(true);
       setError(err instanceof Error ? err.message : '無法讀取檔案');
     } finally {
       setIsLoading(false);
@@ -672,6 +862,8 @@ function App() {
     setFileName('');
     setRows([]);
     setNumericColumns([]);
+    setStatusColumns([]);
+    setDefaultColumns(DEFAULT_COLUMNS);
     setSelectedColumns([]);
     setSecondaryColumns([]);
     setWarnings([]);
@@ -682,6 +874,7 @@ function App() {
     setRangeEndInput('');
     setColumnSearch('');
     setSecondaryColumnSearch('');
+    setShowTooltipStatus(true);
     setChartTitle('主要功耗圖');
     setSecondaryChartTitle('次要欄位圖');
   }
@@ -824,9 +1017,19 @@ function App() {
                 />
                 <span>顯示次要欄位與次要圖</span>
               </label>
+              {statusColumns.length > 0 && (
+                <label className="secondary-toggle">
+                  <input
+                    type="checkbox"
+                    checked={showTooltipStatus}
+                    onChange={(event) => setShowTooltipStatus(event.target.checked)}
+                  />
+                  <span>懸浮窗顯示摘要狀態</span>
+                </label>
+              )}
               <ColumnSelector
                 columns={numericColumns}
-                defaultColumns={DEFAULT_COLUMNS}
+                defaultColumns={defaultColumns}
                 emptyText="找不到符合搜尋的數值欄位"
                 filteredColumns={filteredColumns}
                 onSearchChange={setColumnSearch}
@@ -839,7 +1042,7 @@ function App() {
               {showSecondaryChart && (
                 <ColumnSelector
                   columns={numericColumns}
-                  defaultColumns={DEFAULT_COLUMNS}
+                  defaultColumns={defaultColumns}
                   emptyText="找不到符合搜尋的數值欄位"
                   filteredColumns={filteredSecondaryColumns}
                   onSearchChange={setSecondaryColumnSearch}
@@ -899,6 +1102,7 @@ function App() {
                 }
                 onTitleChange={setChartTitle}
                 selectedColumns={selectedColumns}
+                statusColumns={showTooltipStatus ? statusColumns : []}
                 title={chartTitle}
               />
               {showSecondaryChart && (
@@ -915,9 +1119,16 @@ function App() {
                   }
                   onTitleChange={setSecondaryChartTitle}
                   selectedColumns={secondaryColumns}
+                  statusColumns={showTooltipStatus ? statusColumns : []}
                   title={secondaryChartTitle}
                 />
               )}
+              <StatusTable
+                rows={rangedRows}
+                statusColumns={statusColumns}
+                xKey={xKey}
+                rangeStart={range.start}
+              />
             </section>
           </section>
         </>

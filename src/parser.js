@@ -9,7 +9,36 @@ export const DEFAULT_COLUMNS = [
   'CPU Temperature (C)',
 ];
 
-const HEADER_HINTS = ['Iteration', 'Date', 'Timestamp', ...DEFAULT_COLUMNS];
+export const STATUS_COLUMNS = [
+  '1:P-State',
+  '1:Capping Reason',
+  'CPU PROCHOT Asserted',
+  'CPU Thermal Throttling',
+];
+
+export const PTAT_DEFAULT_COLUMNS = [
+  'Power-Package Power(Watts)',
+  'Miscellaneous-MSR Package Temperature(Degree C)',
+];
+
+export const PTAT_STATUS_COLUMNS = [
+  'Turbo Parameters-IA Clip Reason',
+  'Turbo Parameters-Gt Clip Reason',
+  'Turbo Parameters-IA Thermal Status',
+  'Turbo Parameters-GT Thermal Status',
+  'PCH-Throttling Level',
+];
+
+const GPU_HEADER_HINTS = ['Iteration', 'Date', 'Timestamp', ...DEFAULT_COLUMNS, ...STATUS_COLUMNS];
+const PTAT_HEADER_HINTS = [
+  'Version',
+  'Date',
+  'Time',
+  'Relative Time(mS)',
+  'Power-Package Power(Watts)',
+  'CPU-Info-Current P State',
+];
+const HEADER_HINTS = [...GPU_HEADER_HINTS, ...PTAT_HEADER_HINTS];
 const NA_VALUES = new Set(['', 'n/a', 'na', 'nan', 'null', 'undefined', '-']);
 
 export function toNumber(value) {
@@ -40,12 +69,15 @@ function dedupeHeaders(headers) {
 function rowScore(row) {
   const cells = row.map(normalizeCell);
   const exactHints = HEADER_HINTS.filter((hint) => cells.includes(hint)).length;
+  const ptatHints = PTAT_HEADER_HINTS.filter((hint) => cells.includes(hint)).length;
   const hasIteration = cells.includes('Iteration');
   const hasDate = cells.includes('Date');
   const hasTimestamp = cells.includes('Timestamp');
+  const hasTime = cells.includes('Time');
   const nonEmptyCount = cells.filter(Boolean).length;
 
   if (hasIteration && hasDate && hasTimestamp) return 100 + exactHints + nonEmptyCount / 100;
+  if (hasDate && hasTime && ptatHints >= 4) return 95 + ptatHints + nonEmptyCount / 100;
   if (hasIteration && exactHints >= 2) return 80 + exactHints;
   if (exactHints >= 3) return 60 + exactHints;
   return exactHints;
@@ -102,6 +134,15 @@ function tableToRows(table) {
 }
 
 function buildXLabels(rows) {
+  if (rows.some((row) => normalizeCell(row.Time))) {
+    const xKey = '__timeLabel';
+    const nextRows = rows.map((row, index) => ({
+      ...row,
+      [xKey]: [normalizeCell(row.Date), normalizeCell(row.Time)].filter(Boolean).join(' ') || String(index + 1),
+    }));
+    return { rows: nextRows, xKey, xLabel: 'Date + Time' };
+  }
+
   if (rows.some((row) => normalizeCell(row.Date) || normalizeCell(row.Timestamp))) {
     const xKey = '__timeLabel';
     const nextRows = rows.map((row, index) => ({
@@ -127,8 +168,30 @@ function getNumericColumns(headers, rows) {
   return headers.filter((header) => rows.some((row) => toNumber(row[header]) !== null));
 }
 
+function detectProfile(headers) {
+  const hasPtLink =
+    headers.includes('Relative Time(mS)') &&
+    headers.includes('Power-Package Power(Watts)') &&
+    headers.includes('CPU-Info-Current P State');
+
+  if (hasPtLink) {
+    return {
+      name: 'ptat',
+      defaultColumns: PTAT_DEFAULT_COLUMNS,
+      statusColumns: PTAT_STATUS_COLUMNS,
+    };
+  }
+
+  return {
+    name: 'gpu',
+    defaultColumns: DEFAULT_COLUMNS,
+    statusColumns: STATUS_COLUMNS,
+  };
+}
+
 function finalizeParsedTable(table) {
   const { headers, rows } = tableToRows(table);
+  const profile = detectProfile(headers);
   const { rows: rowsWithX, xKey, xLabel } = buildXLabels(rows);
   const numericColumns = getNumericColumns(headers, rowsWithX);
 
@@ -136,20 +199,26 @@ function finalizeParsedTable(table) {
     throw new Error('檔案中找不到可分析的數值欄位。');
   }
 
-  const missingDefaults = DEFAULT_COLUMNS.filter((column) => !headers.includes(column));
-  const nonNumericDefaults = DEFAULT_COLUMNS.filter(
+  const missingDefaults = profile.defaultColumns.filter((column) => !headers.includes(column));
+  const missingStatusColumns = profile.statusColumns.filter((column) => !headers.includes(column));
+  const statusColumns = profile.statusColumns.filter((column) => headers.includes(column));
+  const nonNumericDefaults = profile.defaultColumns.filter(
     (column) => headers.includes(column) && !numericColumns.includes(column),
   );
-  const selectedColumns = DEFAULT_COLUMNS.filter((column) => numericColumns.includes(column));
+  const selectedColumns = profile.defaultColumns.filter((column) => numericColumns.includes(column));
   const warnings = [
     ...missingDefaults.map((column) => `預設欄位不存在：${column}`),
     ...nonNumericDefaults.map((column) => `預設欄位不是數值欄位：${column}`),
+    ...missingStatusColumns.map((column) => `狀態欄位不存在：${column}`),
   ];
 
   return {
     headers,
+    defaultColumns: profile.defaultColumns,
+    logType: profile.name,
     rows: rowsWithX,
     numericColumns,
+    statusColumns,
     selectedColumns: selectedColumns.length > 0 ? selectedColumns : numericColumns.slice(0, 5),
     warnings,
     xKey,
